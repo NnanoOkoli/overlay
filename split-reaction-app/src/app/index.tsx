@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { StyleSheet, View, Text, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Audio } from 'expo-av';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
@@ -15,6 +16,13 @@ export default function SplitScreenReaction() {
   const player = useVideoPlayer(SOURCE_VIDEO, (p) => {
     p.loop = false;
   });
+
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      allowsRecordingIOS: true,
+      playsInSilentModeIOS: true,
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!cameraPermission?.granted) requestCameraPermission();

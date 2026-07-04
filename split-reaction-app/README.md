@@ -13,17 +13,23 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 2. Start the app
 
    ```bash
-   npx expo start
+   npm start
    ```
 
-In the output, you'll find options to open the app in a
+   **Run on iPhone (Expo Go):**
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+   1. Install [Expo Go](https://expo.dev/go) from the App Store (keep it updated for SDK 57).
+   2. Start the dev server with `npm start` (uses Expo Go mode).
+   3. **Do not use the iPhone Camera app** if it says "No usable data found" — open **Expo Go → Scan QR code** instead.
+   4. If it still fails, use tunnel mode (works across Wi‑Fi/firewall issues):
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+      ```bash
+      npm run start:tunnel
+      ```
+
+   5. Or in Expo Go, tap **Enter URL manually** and paste the `exp://…` URL shown in the terminal.
+   6. iPhone and PC must be on the **same Wi‑Fi** (unless using tunnel mode).
+   7. Grant camera and microphone when the app opens.
 
 ## Get a fresh project
 
