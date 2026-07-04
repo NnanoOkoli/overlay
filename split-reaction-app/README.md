@@ -1,13 +1,11 @@
-# Split-Screen Reaction App (SDK 56)
+# Split-Screen Reaction App (SDK 54)
 
 Expo Go–compatible split-screen camera + video reaction preview for iPhone.
 
 ## Requirements
 
-- **Expo Go** from the App Store (must support **SDK 56** — check the version shown in Expo Go settings)
+- **Expo Go SDK 54** from the App Store
 - iPhone and PC on the same Wi‑Fi (or use tunnel mode)
-
-> **Note:** This project uses **SDK 56** because SDK 57 Expo Go is not yet available on the iOS App Store. If Expo Go shows an SDK mismatch error, check which SDK your Expo Go supports and let us know.
 
 ## Get started
 
