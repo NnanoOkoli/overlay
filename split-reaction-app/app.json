@@ -39,7 +39,8 @@
           "microphonePermission": "Allow split-reaction-app to access your microphone for reaction recording.",
           "recordAudioAndroid": true
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }
