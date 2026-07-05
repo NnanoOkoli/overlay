@@ -10,7 +10,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Audio } from 'expo-av';
+import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { WebView } from 'react-native-webview';
 
@@ -24,6 +24,7 @@ type SourceKey = (typeof SOURCES)[number]['key'];
 
 const MIN_CAMERA_FRACTION = 0.18;
 const MAX_CAMERA_FRACTION = 0.7;
+const ZOOM_STEP = 0.1;
 
 export default function SplitScreenReaction() {
   const insets = useSafeAreaInsets();
@@ -32,25 +33,31 @@ export default function SplitScreenReaction() {
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
   const [isRecording, setIsRecording] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [cameraKey, setCameraKey] = useState(0);
   const [activeSource, setActiveSource] = useState<SourceKey>('tiktok');
   const [contentPaused, setContentPaused] = useState(false);
+  const [zoom, setZoom] = useState(0);
   const [cameraHeight, setCameraHeight] = useState(Math.round(windowHeight * 0.42));
   const cameraRef = useRef<CameraView>(null);
   const webViewRef = useRef<WebView>(null);
   const dragStartHeight = useRef(0);
+  const wantRecordingRef = useRef(false);
+  const segmentsRef = useRef<string[]>([]);
 
   const minCameraHeight = Math.round(windowHeight * MIN_CAMERA_FRACTION);
   const maxCameraHeight = Math.round(windowHeight * MAX_CAMERA_FRACTION);
 
-  // Refs keep the PanResponder callbacks reading fresh values without re-creating it.
+  // Refs keep gesture callbacks reading fresh values without re-creating responders.
   const cameraHeightRef = useRef(cameraHeight);
   cameraHeightRef.current = cameraHeight;
   const minCameraHeightRef = useRef(minCameraHeight);
   minCameraHeightRef.current = minCameraHeight;
   const maxCameraHeightRef = useRef(maxCameraHeight);
   maxCameraHeightRef.current = maxCameraHeight;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
 
-  const panResponder = useRef(
+  const resizeResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_evt, gesture) => Math.abs(gesture.dy) > 4,
@@ -67,10 +74,39 @@ export default function SplitScreenReaction() {
     }),
   ).current;
 
+  // Two-finger pinch on the camera pane adjusts zoom (0..1).
+  const pinchStart = useRef({ distance: 0, zoom: 0 });
+  const pinchResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: (evt) => evt.nativeEvent.touches.length === 2,
+      onMoveShouldSetPanResponder: (evt) => evt.nativeEvent.touches.length === 2,
+      onPanResponderGrant: (evt) => {
+        const t = evt.nativeEvent.touches;
+        if (t.length === 2) {
+          pinchStart.current = {
+            distance: Math.hypot(t[0].pageX - t[1].pageX, t[0].pageY - t[1].pageY),
+            zoom: zoomRef.current,
+          };
+        }
+      },
+      onPanResponderMove: (evt) => {
+        const t = evt.nativeEvent.touches;
+        if (t.length !== 2 || pinchStart.current.distance === 0) return;
+        const distance = Math.hypot(t[0].pageX - t[1].pageX, t[0].pageY - t[1].pageY);
+        const delta = (distance - pinchStart.current.distance) / 400;
+        setZoom(Math.min(1, Math.max(0, pinchStart.current.zoom + delta)));
+      },
+    }),
+  ).current;
+
   useEffect(() => {
+    // MixWithOthers keeps the mic/recording session alive while WebView videos play.
     Audio.setAudioModeAsync({
       allowsRecordingIOS: true,
       playsInSilentModeIOS: true,
+      interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
+      interruptionModeAndroid: InterruptionModeAndroid.DuckOthers,
+      shouldDuckAndroid: true,
     }).catch(() => {});
   }, []);
 
@@ -103,28 +139,50 @@ export default function SplitScreenReaction() {
     );
   }
 
+  // Records in a loop: if the OS interrupts the recording (audio route change,
+  // WebView media, resize, etc.) we save that segment and immediately start a
+  // new one, so the camera never stays frozen or "unable to record".
+  const runRecordingLoop = async () => {
+    while (wantRecordingRef.current) {
+      const camera = cameraRef.current;
+      if (!camera) break;
+      try {
+        const recording = await camera.recordAsync({ maxDuration: 600 });
+        if (recording?.uri) segmentsRef.current.push(recording.uri);
+      } catch {
+        // Interrupted — nudge the preview back to life before retrying.
+        try {
+          await camera.resumePreview();
+        } catch {}
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    }
+  };
+
   const toggleReactionRecording = async () => {
+    if (isRecording) {
+      wantRecordingRef.current = false;
+      cameraRef.current?.stopRecording();
+      return;
+    }
+
     if (!cameraReady || !cameraRef.current) {
       Alert.alert('Camera not ready', 'Wait a moment for the camera to initialize.');
       return;
     }
 
-    if (isRecording) {
-      cameraRef.current.stopRecording();
-      setIsRecording(false);
-      return;
-    }
+    segmentsRef.current = [];
+    wantRecordingRef.current = true;
+    setIsRecording(true);
+    await runRecordingLoop();
+    setIsRecording(false);
 
-    try {
-      setIsRecording(true);
-      const recording = await cameraRef.current.recordAsync({ maxDuration: 600 });
-      if (recording?.uri) {
-        Alert.alert('Reaction saved', 'Your reaction clip was recorded.');
-      }
-    } catch {
-      Alert.alert('Recording failed', 'Could not record your reaction. Please try again.');
-    } finally {
-      setIsRecording(false);
+    const count = segmentsRef.current.length;
+    if (count > 0) {
+      Alert.alert(
+        'Reaction saved',
+        count === 1 ? 'Your reaction clip was recorded.' : `Recorded ${count} clips.`,
+      );
     }
   };
 
@@ -143,19 +201,30 @@ export default function SplitScreenReaction() {
     setContentPaused(next);
   };
 
+  const adjustZoom = (delta: number) => {
+    setZoom((z) => Math.min(1, Math.max(0, +(z + delta).toFixed(2))));
+  };
+
   const source = SOURCES.find((s) => s.key === activeSource)!;
 
   return (
     <View style={styles.container}>
-      {/* Reaction camera — height adjustable via the drag handle below */}
-      <View style={[styles.cameraPane, { height: cameraHeight }]}>
+      {/* Reaction camera — resize via the handle on its bottom edge, zoom via pinch or +/- */}
+      <View style={[styles.cameraPane, { height: cameraHeight }]} {...pinchResponder.panHandlers}>
         <CameraView
+          key={cameraKey}
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
           facing="front"
           mode="video"
           mirror
+          zoom={zoom}
           onCameraReady={() => setCameraReady(true)}
+          onMountError={() => {
+            // Force a clean remount so the preview never stays frozen.
+            setCameraReady(false);
+            setCameraKey((k) => k + 1);
+          }}
         />
         <View style={[styles.label, { top: insets.top + 8 }]}>
           <View style={[styles.recordingDot, isRecording && styles.recordingDotActive]} />
@@ -167,17 +236,28 @@ export default function SplitScreenReaction() {
           </View>
         )}
 
+        {/* Zoom controls */}
+        <View style={styles.zoomControls}>
+          <Pressable style={styles.zoomButton} onPress={() => adjustZoom(-ZOOM_STEP)}>
+            <Text style={styles.zoomButtonText}>−</Text>
+          </Pressable>
+          <Text style={styles.zoomValue}>{`${(1 + zoom * 4).toFixed(1)}x`}</Text>
+          <Pressable style={styles.zoomButton} onPress={() => adjustZoom(ZOOM_STEP)}>
+            <Text style={styles.zoomButtonText}>+</Text>
+          </Pressable>
+        </View>
+
         <Pressable
           style={[styles.recordButton, isRecording && styles.recordButtonActive]}
           onPress={toggleReactionRecording}
           disabled={!cameraReady}>
           <View style={isRecording ? styles.stopIcon : styles.recordIcon} />
         </Pressable>
-      </View>
 
-      {/* Drag handle: pull up/down to resize the reaction camera */}
-      <View style={styles.dragHandle} {...panResponder.panHandlers}>
-        <View style={styles.dragHandleBar} />
+        {/* Floating drag handle on the camera's bottom edge — no divider bar */}
+        <View style={styles.dragHandle} {...resizeResponder.panHandlers}>
+          <View style={styles.dragHandleBar} />
+        </View>
       </View>
 
       {/* Streaming content you react to */}
@@ -302,7 +382,7 @@ const styles = StyleSheet.create({
   recordButton: {
     position: 'absolute',
     right: 16,
-    bottom: 12,
+    bottom: 26,
     width: 60,
     height: 60,
     borderRadius: 30,
@@ -327,20 +407,53 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 4,
   },
-  dragHandle: {
-    height: 26,
+  zoomControls: {
+    position: 'absolute',
+    left: 12,
+    bottom: 26,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 18,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  zoomButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255,255,255,0.25)',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#111',
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#333',
+  },
+  zoomButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  zoomValue: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+    minWidth: 34,
+    textAlign: 'center',
+  },
+  dragHandle: {
+    position: 'absolute',
+    bottom: 0,
+    alignSelf: 'center',
+    width: 90,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dragHandleBar: {
     width: 44,
     height: 5,
     borderRadius: 3,
-    backgroundColor: '#666',
+    backgroundColor: 'rgba(255,255,255,0.75)',
   },
   sourceBar: {
     flexDirection: 'row',
