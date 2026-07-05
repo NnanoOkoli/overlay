@@ -1,5 +1,14 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, Pressable, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  PanResponder,
+  StyleSheet,
+  Text,
+  Pressable,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Audio } from 'expo-av';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
@@ -13,15 +22,50 @@ const SOURCES = [
 
 type SourceKey = (typeof SOURCES)[number]['key'];
 
+const MIN_CAMERA_FRACTION = 0.18;
+const MAX_CAMERA_FRACTION = 0.7;
+
 export default function SplitScreenReaction() {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
   const [isRecording, setIsRecording] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [activeSource, setActiveSource] = useState<SourceKey>('tiktok');
+  const [contentPaused, setContentPaused] = useState(false);
+  const [cameraHeight, setCameraHeight] = useState(Math.round(windowHeight * 0.42));
   const cameraRef = useRef<CameraView>(null);
   const webViewRef = useRef<WebView>(null);
+  const dragStartHeight = useRef(0);
+
+  const minCameraHeight = Math.round(windowHeight * MIN_CAMERA_FRACTION);
+  const maxCameraHeight = Math.round(windowHeight * MAX_CAMERA_FRACTION);
+
+  // Refs keep the PanResponder callbacks reading fresh values without re-creating it.
+  const cameraHeightRef = useRef(cameraHeight);
+  cameraHeightRef.current = cameraHeight;
+  const minCameraHeightRef = useRef(minCameraHeight);
+  minCameraHeightRef.current = minCameraHeight;
+  const maxCameraHeightRef = useRef(maxCameraHeight);
+  maxCameraHeightRef.current = maxCameraHeight;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_evt, gesture) => Math.abs(gesture.dy) > 4,
+      onPanResponderGrant: () => {
+        dragStartHeight.current = cameraHeightRef.current;
+      },
+      onPanResponderMove: (_evt, gesture) => {
+        const next = Math.min(
+          maxCameraHeightRef.current,
+          Math.max(minCameraHeightRef.current, dragStartHeight.current + gesture.dy),
+        );
+        setCameraHeight(next);
+      },
+    }),
+  ).current;
 
   useEffect(() => {
     Audio.setAudioModeAsync({
@@ -84,12 +128,27 @@ export default function SplitScreenReaction() {
     }
   };
 
+  // Pauses/plays <video> elements inside the WebView only. The camera
+  // recording runs natively and is completely unaffected by this.
+  const toggleContentPlayback = () => {
+    const next = !contentPaused;
+    webViewRef.current?.injectJavaScript(`
+      (function () {
+        document.querySelectorAll('video').forEach(function (v) {
+          ${next ? 'v.pause();' : 'v.play().catch(function () {});'}
+        });
+      })();
+      true;
+    `);
+    setContentPaused(next);
+  };
+
   const source = SOURCES.find((s) => s.key === activeSource)!;
 
   return (
     <View style={styles.container}>
-      {/* Top half: live front camera for your reaction */}
-      <View style={styles.half}>
+      {/* Reaction camera — height adjustable via the drag handle below */}
+      <View style={[styles.cameraPane, { height: cameraHeight }]}>
         <CameraView
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
@@ -100,9 +159,7 @@ export default function SplitScreenReaction() {
         />
         <View style={[styles.label, { top: insets.top + 8 }]}>
           <View style={[styles.recordingDot, isRecording && styles.recordingDotActive]} />
-          <Text style={styles.labelText}>
-            {isRecording ? 'Recording…' : 'Your reaction'}
-          </Text>
+          <Text style={styles.labelText}>{isRecording ? 'Recording…' : 'Your reaction'}</Text>
         </View>
         {!cameraReady && (
           <View style={styles.loadingOverlay}>
@@ -110,7 +167,6 @@ export default function SplitScreenReaction() {
           </View>
         )}
 
-        {/* Record button lives on the camera half so it never blocks scrolling */}
         <Pressable
           style={[styles.recordButton, isRecording && styles.recordButtonActive]}
           onPress={toggleReactionRecording}
@@ -119,29 +175,13 @@ export default function SplitScreenReaction() {
         </Pressable>
       </View>
 
-      {/* Source switcher bar */}
-      <View style={styles.sourceBar}>
-        {SOURCES.map((s) => (
-          <Pressable
-            key={s.key}
-            style={[styles.sourceTab, activeSource === s.key && styles.sourceTabActive]}
-            onPress={() => setActiveSource(s.key)}>
-            <Text
-              style={[
-                styles.sourceTabText,
-                activeSource === s.key && styles.sourceTabTextActive,
-              ]}>
-              {s.label}
-            </Text>
-          </Pressable>
-        ))}
-        <Pressable style={styles.sourceTab} onPress={() => webViewRef.current?.goBack()}>
-          <Text style={styles.sourceTabText}>←</Text>
-        </Pressable>
+      {/* Drag handle: pull up/down to resize the reaction camera */}
+      <View style={styles.dragHandle} {...panResponder.panHandlers}>
+        <View style={styles.dragHandleBar} />
       </View>
 
-      {/* Bottom half: scrollable streaming content you react to */}
-      <View style={styles.half}>
+      {/* Streaming content you react to */}
+      <View style={styles.contentPane}>
         <WebView
           ref={webViewRef}
           source={{ uri: source.url }}
@@ -157,6 +197,35 @@ export default function SplitScreenReaction() {
           )}
         />
       </View>
+
+      {/* Bottom bar: source tabs + stream pause/play, under the content */}
+      <View style={[styles.sourceBar, { paddingBottom: insets.bottom + 6 }]}>
+        {SOURCES.map((s) => (
+          <Pressable
+            key={s.key}
+            style={[styles.sourceTab, activeSource === s.key && styles.sourceTabActive]}
+            onPress={() => {
+              setActiveSource(s.key);
+              setContentPaused(false);
+            }}>
+            <Text
+              style={[styles.sourceTabText, activeSource === s.key && styles.sourceTabTextActive]}>
+              {s.label}
+            </Text>
+          </Pressable>
+        ))}
+        <Pressable style={styles.sourceTab} onPress={() => webViewRef.current?.goBack()}>
+          <Text style={styles.sourceTabText}>←</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.sourceTab, styles.playPauseTab, contentPaused && styles.sourceTabActive]}
+          onPress={toggleContentPlayback}>
+          <Text
+            style={[styles.sourceTabText, contentPaused && styles.sourceTabTextActive]}>
+            {contentPaused ? '▶' : '⏸'}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -166,7 +235,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  half: {
+  cameraPane: {
+    overflow: 'hidden',
+  },
+  contentPane: {
     flex: 1,
     overflow: 'hidden',
   },
@@ -255,23 +327,41 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 4,
   },
-  sourceBar: {
-    flexDirection: 'row',
+  dragHandle: {
+    height: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
     backgroundColor: '#111',
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: '#333',
   },
+  dragHandleBar: {
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#666',
+  },
+  sourceBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingTop: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#111',
+    borderTopWidth: 1,
+    borderColor: '#333',
+  },
   sourceTab: {
     paddingHorizontal: 14,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: 14,
     backgroundColor: '#222',
+  },
+  playPauseTab: {
+    minWidth: 44,
+    alignItems: 'center',
   },
   sourceTabActive: {
     backgroundColor: '#fff',
