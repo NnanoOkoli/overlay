@@ -10,6 +10,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useIsFocused } from '@react-navigation/native';
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { WebView } from 'react-native-webview';
@@ -28,10 +29,12 @@ const ZOOM_STEP = 0.1;
 
 export default function SplitScreenReaction() {
   const insets = useSafeAreaInsets();
+  const isFocused = useIsFocused();
   const { height: windowHeight } = useWindowDimensions();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
   const [isRecording, setIsRecording] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [activeSource, setActiveSource] = useState<SourceKey>('tiktok');
@@ -43,6 +46,10 @@ export default function SplitScreenReaction() {
   const dragStartHeight = useRef(0);
   const wantRecordingRef = useRef(false);
   const segmentsRef = useRef<string[]>([]);
+
+  // The camera is only mounted when the screen is focused AND the user has
+  // started a recording session — it never runs during browsing/setup.
+  const cameraMounted = isFocused && cameraActive;
 
   const minCameraHeight = Math.round(windowHeight * MIN_CAMERA_FRACTION);
   const maxCameraHeight = Math.round(windowHeight * MAX_CAMERA_FRACTION);
@@ -56,6 +63,8 @@ export default function SplitScreenReaction() {
   maxCameraHeightRef.current = maxCameraHeight;
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  const cameraReadyRef = useRef(cameraReady);
+  cameraReadyRef.current = cameraReady;
 
   const resizeResponder = useRef(
     PanResponder.create({
@@ -122,6 +131,17 @@ export default function SplitScreenReaction() {
     if (!micPermission?.granted) requestMicPermission();
   }, [cameraPermission, micPermission, requestCameraPermission, requestMicPermission]);
 
+  // Tear the camera down whenever the screen loses focus so the native
+  // session never lingers invisibly in the background.
+  useEffect(() => {
+    if (!isFocused) {
+      wantRecordingRef.current = false;
+      cameraRef.current?.stopRecording();
+      setCameraActive(false);
+      setCameraReady(false);
+    }
+  }, [isFocused]);
+
   if (!cameraPermission || !micPermission) {
     return <View style={styles.container} />;
   }
@@ -154,8 +174,9 @@ export default function SplitScreenReaction() {
     let consecutiveFailures = 0;
     while (wantRecordingRef.current) {
       const camera = cameraRef.current;
-      if (!camera) {
-        await new Promise((r) => setTimeout(r, 400));
+      if (!camera || !cameraReadyRef.current) {
+        // Camera still mounting/initializing — wait, don't fail.
+        await new Promise((r) => setTimeout(r, 200));
         continue;
       }
       try {
@@ -186,11 +207,9 @@ export default function SplitScreenReaction() {
     if (isRecording) {
       wantRecordingRef.current = false;
       cameraRef.current?.stopRecording();
-      return;
-    }
-
-    if (!cameraReady || !cameraRef.current) {
-      Alert.alert('Camera not ready', 'Wait a moment for the camera to initialize.');
+      // Power the camera down after the take — it stays off while browsing.
+      setCameraActive(false);
+      setCameraReady(false);
       return;
     }
 
@@ -204,6 +223,8 @@ export default function SplitScreenReaction() {
       shouldDuckAndroid: true,
     }).catch(() => {});
 
+    // Mount the camera now — the recording loop waits until it's ready.
+    setCameraActive(true);
     segmentsRef.current = [];
     wantRecordingRef.current = true;
     setIsRecording(true);
@@ -242,48 +263,58 @@ export default function SplitScreenReaction() {
 
   return (
     <View style={styles.container}>
-      {/* Reaction camera — resize via the handle on its bottom edge, zoom via pinch or +/- */}
+      {/* Reaction camera — mounted only while focused and recording */}
       <View style={[styles.cameraPane, { height: cameraHeight }]} {...pinchResponder.panHandlers}>
-        <CameraView
-          key={cameraKey}
-          ref={cameraRef}
-          style={StyleSheet.absoluteFill}
-          facing="front"
-          mode="video"
-          mirror
-          zoom={zoom}
-          onCameraReady={() => setCameraReady(true)}
-          onMountError={() => {
-            // Force a clean remount so the preview never stays frozen.
-            setCameraReady(false);
-            setCameraKey((k) => k + 1);
-          }}
-        />
+        {cameraMounted ? (
+          <CameraView
+            key={cameraKey}
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            facing="front"
+            mode="video"
+            mirror
+            zoom={zoom}
+            onCameraReady={() => setCameraReady(true)}
+            onMountError={() => {
+              // Force a clean remount so the preview never stays frozen.
+              setCameraReady(false);
+              setCameraKey((k) => k + 1);
+            }}
+          />
+        ) : (
+          <View style={styles.cameraIdle}>
+            <Text style={styles.cameraIdleTitle}>Camera off</Text>
+            <Text style={styles.cameraIdleHint}>Tap the record button to start your reaction</Text>
+          </View>
+        )}
         <View style={[styles.label, { top: insets.top + 8 }]}>
           <View style={[styles.recordingDot, isRecording && styles.recordingDotActive]} />
-          <Text style={styles.labelText}>{isRecording ? 'Recording…' : 'Your reaction'}</Text>
+          <Text style={styles.labelText}>
+            {isRecording ? 'Recording…' : cameraMounted ? 'Your reaction' : 'Standby'}
+          </Text>
         </View>
-        {!cameraReady && (
+        {cameraMounted && !cameraReady && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator color="#fff" />
           </View>
         )}
 
-        {/* Zoom controls — vertical, translucent */}
-        <View style={styles.zoomControls}>
-          <Pressable style={styles.zoomButton} onPress={() => adjustZoom(ZOOM_STEP)}>
-            <Text style={styles.zoomButtonText}>+</Text>
-          </Pressable>
-          <Text style={styles.zoomValue}>{`${(1 + zoom * 4).toFixed(1)}x`}</Text>
-          <Pressable style={styles.zoomButton} onPress={() => adjustZoom(-ZOOM_STEP)}>
-            <Text style={styles.zoomButtonText}>−</Text>
-          </Pressable>
-        </View>
+        {/* Zoom controls — vertical, translucent, only while the camera is live */}
+        {cameraMounted && (
+          <View style={styles.zoomControls}>
+            <Pressable style={styles.zoomButton} onPress={() => adjustZoom(ZOOM_STEP)}>
+              <Text style={styles.zoomButtonText}>+</Text>
+            </Pressable>
+            <Text style={styles.zoomValue}>{`${(1 + zoom * 4).toFixed(1)}x`}</Text>
+            <Pressable style={styles.zoomButton} onPress={() => adjustZoom(-ZOOM_STEP)}>
+              <Text style={styles.zoomButtonText}>−</Text>
+            </Pressable>
+          </View>
+        )}
 
         <Pressable
           style={[styles.recordButton, isRecording && styles.recordButtonActive]}
-          onPress={toggleReactionRecording}
-          disabled={!cameraReady}>
+          onPress={toggleReactionRecording}>
           <View style={isRecording ? styles.stopIcon : styles.recordIcon} />
         </Pressable>
 
@@ -350,6 +381,24 @@ const styles = StyleSheet.create({
   },
   cameraPane: {
     overflow: 'hidden',
+  },
+  cameraIdle: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#0a0a0a',
+  },
+  cameraIdleTitle: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  cameraIdleHint: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 12,
+    textAlign: 'center',
+    paddingHorizontal: 24,
   },
   contentPane: {
     flex: 1,
