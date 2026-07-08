@@ -65,6 +65,26 @@ export default function SplitScreenReaction() {
   zoomRef.current = zoom;
   const cameraReadyRef = useRef(cameraReady);
   cameraReadyRef.current = cameraReady;
+  const contentPausedRef = useRef(contentPaused);
+  contentPausedRef.current = contentPaused;
+
+  // iOS pauses WebView media when the camera's capture session starts.
+  // This re-issues play() to the content videos over the next few seconds
+  // (unless the user paused them on purpose) so the stream keeps rolling
+  // through the interruption.
+  const resumeContentVideos = () => {
+    const js = `
+      document.querySelectorAll('video').forEach(function (v) {
+        if (v.paused) v.play().catch(function () {});
+      });
+      true;
+    `;
+    [150, 500, 1000, 2000, 3500].forEach((ms) =>
+      setTimeout(() => {
+        if (!contentPausedRef.current) webViewRef.current?.injectJavaScript(js);
+      }, ms),
+    );
+  };
 
   const resizeResponder = useRef(
     PanResponder.create({
@@ -180,6 +200,9 @@ export default function SplitScreenReaction() {
         continue;
       }
       try {
+        // Starting a capture segment is what pauses WebView media — queue
+        // the auto-resume before the await so playback recovers instantly.
+        resumeContentVideos();
         const recording = await camera.recordAsync({ maxDuration: 600 });
         if (recording?.uri) {
           segmentsRef.current.push(recording.uri);
@@ -210,6 +233,8 @@ export default function SplitScreenReaction() {
       // Power the camera down after the take — it stays off while browsing.
       setCameraActive(false);
       setCameraReady(false);
+      // Session teardown can also pause WebView media — recover it.
+      resumeContentVideos();
       return;
     }
 
@@ -274,7 +299,11 @@ export default function SplitScreenReaction() {
             mode="video"
             mirror
             zoom={zoom}
-            onCameraReady={() => setCameraReady(true)}
+            onCameraReady={() => {
+              setCameraReady(true);
+              // Camera session startup pauses WebView media — recover it.
+              resumeContentVideos();
+            }}
             onMountError={() => {
               // Force a clean remount so the preview never stays frozen.
               setCameraReady(false);
