@@ -1,0 +1,17 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>App icon</title>
+  <desc>Two overlapping tilted panels in magenta and lime, black outlined, with a white lightning bolt cutting across them on a black rounded background.</desc>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="200" fill="#0A0A0A"/>
+
+  <g transform="rotate(-10 420 710)">
+    <rect x="140" y="520" width="560" height="380" rx="48" fill="#FF2E92" stroke="#0A0A0A" stroke-width="22"/>
+  </g>
+
+  <g transform="rotate(8 610 470)">
+    <rect x="330" y="280" width="560" height="380" rx="48" fill="#D4FF00" stroke="#0A0A0A" stroke-width="22"/>
+  </g>
+
+  <polygon points="592,220 452,560 558,560 462,824 712,478 588,478"
+           fill="#FFFFFF" stroke="#0A0A0A" stroke-width="16" stroke-linejoin="round"/>
+</svg>

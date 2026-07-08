@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   PanResponder,
   StyleSheet,
   Text,
@@ -312,6 +313,11 @@ export default function SplitScreenReaction() {
           />
         ) : (
           <View style={styles.cameraIdle}>
+            <Image
+              source={require('@/assets/images/camera-placeholder.png')}
+              style={styles.cameraIdleImage}
+              resizeMode="contain"
+            />
             <Text style={styles.cameraIdleTitle}>Camera off</Text>
             <Text style={styles.cameraIdleHint}>Tap the record button to start your reaction</Text>
           </View>
@@ -417,6 +423,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     backgroundColor: '#0a0a0a',
+  },
+  cameraIdleImage: {
+    width: 84,
+    height: 84,
+    borderRadius: 20,
+    marginBottom: 6,
   },
   cameraIdleTitle: {
     color: 'rgba(255,255,255,0.85)',
