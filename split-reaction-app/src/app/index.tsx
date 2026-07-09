@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import * as MediaLibrary from 'expo-media-library';
 import { WebView } from 'react-native-webview';
 
 const SOURCES = [
@@ -257,12 +258,34 @@ export default function SplitScreenReaction() {
     await runRecordingLoop();
     setIsRecording(false);
 
-    const count = segmentsRef.current.length;
-    if (count > 0) {
+    const clips = segmentsRef.current;
+    if (clips.length === 0) return;
+
+    // Save the clips to the iPhone Photos library so they show up in Recents.
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== 'granted') {
       Alert.alert(
-        'Reaction saved',
-        count === 1 ? 'Your reaction clip was recorded.' : `Recorded ${count} clips.`,
+        'Clip recorded, but not saved',
+        'Allow Photos access in Settings so your reactions can be saved to your camera roll.',
       );
+      return;
+    }
+
+    let saved = 0;
+    for (const uri of clips) {
+      try {
+        await MediaLibrary.saveToLibraryAsync(uri);
+        saved += 1;
+      } catch {}
+    }
+
+    if (saved > 0) {
+      Alert.alert(
+        'Reaction saved to Photos',
+        saved === 1 ? 'Your reaction clip is in your camera roll.' : `${saved} clips are in your camera roll.`,
+      );
+    } else {
+      Alert.alert('Save failed', 'The clip was recorded but could not be saved to Photos.');
     }
   };
 

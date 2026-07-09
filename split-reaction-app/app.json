@@ -40,6 +40,14 @@
           "recordAudioAndroid": true
         }
       ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow split-reaction-app to save your reaction clips to your photo library.",
+          "savePhotosPermission": "Allow split-reaction-app to save your reaction clips to your photo library.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
       "expo-font"
     ]
   }
