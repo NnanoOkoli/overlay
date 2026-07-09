@@ -289,6 +289,16 @@ export default function SplitScreenReaction() {
     }
   };
 
+  // Turns the camera preview on/off without recording — used when the user
+  // captures the composed screen with iOS screen recording instead.
+  const toggleCameraPower = () => {
+    if (isRecording) return; // the in-app recording flow owns the camera
+    setCameraActive((on) => {
+      if (on) setCameraReady(false);
+      return !on;
+    });
+  };
+
   // Pauses/plays <video> elements inside the WebView only. The camera
   // recording runs natively and is completely unaffected by this.
   const toggleContentPlayback = () => {
@@ -342,7 +352,10 @@ export default function SplitScreenReaction() {
               resizeMode="contain"
             />
             <Text style={styles.cameraIdleTitle}>Camera off</Text>
-            <Text style={styles.cameraIdleHint}>Tap the record button to start your reaction</Text>
+            <Text style={styles.cameraIdleHint}>
+              Turn the camera on, then use iOS screen recording to capture your reaction with the
+              content — or tap record to save a selfie clip
+            </Text>
           </View>
         )}
         <View style={[styles.label, { top: insets.top + 8 }]}>
@@ -351,6 +364,15 @@ export default function SplitScreenReaction() {
             {isRecording ? 'Recording…' : cameraMounted ? 'Your reaction' : 'Standby'}
           </Text>
         </View>
+        {/* Camera power toggle — lets the preview run for iOS screen recording */}
+        <Pressable
+          style={[styles.cameraToggle, { top: insets.top + 8 }]}
+          onPress={toggleCameraPower}
+          disabled={isRecording}>
+          <Text style={styles.cameraToggleText}>
+            {cameraMounted ? 'Camera: on' : 'Camera: off'}
+          </Text>
+        </Pressable>
         {cameraMounted && !cameraReady && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator color="#fff" />
@@ -506,6 +528,19 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   labelText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  cameraToggle: {
+    position: 'absolute',
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  cameraToggleText: {
     color: '#fff',
     fontSize: 13,
     fontWeight: '600',
