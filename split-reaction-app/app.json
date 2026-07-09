@@ -41,6 +41,12 @@
         }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow split-reaction-app to import videos you want to react to."
+        }
+      ],
+      [
         "expo-media-library",
         {
           "photosPermission": "Allow split-reaction-app to save your reaction clips to your photo library.",

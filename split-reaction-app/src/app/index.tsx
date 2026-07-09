@@ -14,13 +14,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { WebView } from 'react-native-webview';
 
 const SOURCES = [
   { key: 'tiktok', label: 'TikTok', url: 'https://www.tiktok.com/foryou' },
   { key: 'shorts', label: 'Shorts', url: 'https://m.youtube.com/shorts' },
   { key: 'youtube', label: 'YouTube', url: 'https://m.youtube.com' },
+  { key: 'library', label: 'My Video', url: '' },
 ] as const;
 
 type SourceKey = (typeof SOURCES)[number]['key'];
@@ -43,11 +46,17 @@ export default function SplitScreenReaction() {
   const [contentPaused, setContentPaused] = useState(false);
   const [zoom, setZoom] = useState(0);
   const [cameraHeight, setCameraHeight] = useState(Math.round(windowHeight * 0.42));
+  const [libraryVideoUri, setLibraryVideoUri] = useState<string | null>(null);
   const cameraRef = useRef<CameraView>(null);
   const webViewRef = useRef<WebView>(null);
   const dragStartHeight = useRef(0);
   const wantRecordingRef = useRef(false);
   const segmentsRef = useRef<string[]>([]);
+
+  // Player for videos the user imports from their Photos library.
+  const libraryPlayer = useVideoPlayer(null, (p) => {
+    p.loop = true;
+  });
 
   // The camera is only mounted when the screen is focused AND the user has
   // started a recording session — it never runs during browsing/setup.
@@ -69,6 +78,8 @@ export default function SplitScreenReaction() {
   cameraReadyRef.current = cameraReady;
   const contentPausedRef = useRef(contentPaused);
   contentPausedRef.current = contentPaused;
+  const activeSourceRef = useRef(activeSource);
+  activeSourceRef.current = activeSource;
 
   // iOS pauses WebView media when the camera's capture session starts.
   // This re-issues play() to the content videos over the next few seconds
@@ -83,7 +94,14 @@ export default function SplitScreenReaction() {
     `;
     [150, 500, 1000, 2000, 3500].forEach((ms) =>
       setTimeout(() => {
-        if (!contentPausedRef.current) webViewRef.current?.injectJavaScript(js);
+        if (contentPausedRef.current) return;
+        if (activeSourceRef.current === 'library') {
+          try {
+            libraryPlayer.play();
+          } catch {}
+        } else {
+          webViewRef.current?.injectJavaScript(js);
+        }
       }, ms),
     );
   };
@@ -299,9 +317,38 @@ export default function SplitScreenReaction() {
     });
   };
 
-  // Pauses/plays <video> elements inside the WebView only. The camera
-  // recording runs natively and is completely unaffected by this.
+  // Lets the user import a video from their Photos library to react to.
+  const pickLibraryVideo = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        'Photos access needed',
+        'Allow Photos access in Settings to import a video to react to.',
+      );
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['videos'],
+      allowsMultipleSelection: false,
+    });
+    const uri = result.canceled ? null : result.assets[0]?.uri;
+    if (uri) {
+      setLibraryVideoUri(uri);
+      libraryPlayer.replace(uri);
+      libraryPlayer.play();
+      setContentPaused(false);
+    }
+  };
+
+  // Pauses/plays the content being reacted to (WebView videos or the imported
+  // clip). The camera recording runs natively and is unaffected by this.
   const toggleContentPlayback = () => {
+    if (activeSource === 'library') {
+      if (contentPaused) libraryPlayer.play();
+      else libraryPlayer.pause();
+      setContentPaused(!contentPaused);
+      return;
+    }
     const next = !contentPaused;
     webViewRef.current?.injectJavaScript(`
       (function () {
@@ -404,22 +451,48 @@ export default function SplitScreenReaction() {
         </View>
       </View>
 
-      {/* Streaming content you react to */}
+      {/* Content you react to: streaming sites or an imported video */}
       <View style={styles.contentPane}>
-        <WebView
-          ref={webViewRef}
-          source={{ uri: source.url }}
-          style={styles.webview}
-          allowsInlineMediaPlayback
-          mediaPlaybackRequiresUserAction={false}
-          allowsBackForwardNavigationGestures
-          startInLoadingState
-          renderLoading={() => (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator color="#fff" />
+        {activeSource === 'library' ? (
+          libraryVideoUri ? (
+            <View style={styles.libraryWrap}>
+              <VideoView
+                player={libraryPlayer}
+                style={styles.webview}
+                contentFit="contain"
+                nativeControls={false}
+              />
+              <Pressable style={styles.changeVideoButton} onPress={pickLibraryVideo}>
+                <Text style={styles.changeVideoText}>Change video</Text>
+              </Pressable>
             </View>
-          )}
-        />
+          ) : (
+            <View style={styles.libraryEmpty}>
+              <Text style={styles.libraryTitle}>React to your own video</Text>
+              <Text style={styles.libraryHint}>
+                Import a clip from your Photos library and record your reaction to it.
+              </Text>
+              <Pressable style={styles.importButton} onPress={pickLibraryVideo}>
+                <Text style={styles.importButtonText}>Choose from Photos</Text>
+              </Pressable>
+            </View>
+          )
+        ) : (
+          <WebView
+            ref={webViewRef}
+            source={{ uri: source.url }}
+            style={styles.webview}
+            allowsInlineMediaPlayback
+            mediaPlaybackRequiresUserAction={false}
+            allowsBackForwardNavigationGestures
+            startInLoadingState
+            renderLoading={() => (
+              <View style={styles.loadingOverlay}>
+                <ActivityIndicator color="#fff" />
+              </View>
+            )}
+          />
+        )}
       </View>
 
       {/* Bottom bar: source tabs + stream pause/play, under the content */}
@@ -431,6 +504,13 @@ export default function SplitScreenReaction() {
             onPress={() => {
               setActiveSource(s.key);
               setContentPaused(false);
+              // The imported-video player lives outside the view tree, so
+              // silence it when leaving the tab and resume when returning.
+              if (s.key === 'library') {
+                if (libraryVideoUri) libraryPlayer.play();
+              } else {
+                libraryPlayer.pause();
+              }
             }}>
             <Text
               style={[styles.sourceTabText, activeSource === s.key && styles.sourceTabTextActive]}>
@@ -485,6 +565,53 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     paddingHorizontal: 24,
+  },
+  libraryWrap: {
+    flex: 1,
+  },
+  libraryEmpty: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingHorizontal: 32,
+    backgroundColor: '#0a0a0a',
+  },
+  libraryTitle: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  libraryHint: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  importButton: {
+    marginTop: 8,
+    backgroundColor: '#e91e63',
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: 24,
+  },
+  importButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  changeVideoButton: {
+    position: 'absolute',
+    top: 10,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  changeVideoText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
   },
   contentPane: {
     flex: 1,
