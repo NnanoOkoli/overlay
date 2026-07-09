@@ -4,6 +4,7 @@ import {
   Alert,
   Image,
   PanResponder,
+  ScrollView,
   StyleSheet,
   Text,
   Pressable,
@@ -14,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from 'expo-av';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import { VideoView, useVideoPlayer } from 'expo-video';
@@ -32,6 +34,17 @@ const MIN_CAMERA_FRACTION = 0.18;
 const MAX_CAMERA_FRACTION = 0.7;
 const ZOOM_STEP = 0.1;
 
+// In-app clip library: recordings are copied here so they live inside the
+// app (Photos saving is a bonus, not the only copy).
+const RECORDINGS_DIR = `${FileSystem.documentDirectory}reactions/`;
+
+const recordingTimeLabel = (uri: string) => {
+  const match = /reaction-(\d+)/.exec(uri);
+  if (!match) return 'Clip';
+  const d = new Date(Number(match[1]));
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+};
+
 export default function SplitScreenReaction() {
   const insets = useSafeAreaInsets();
   const isFocused = useIsFocused();
@@ -47,6 +60,7 @@ export default function SplitScreenReaction() {
   const [zoom, setZoom] = useState(0);
   const [cameraHeight, setCameraHeight] = useState(Math.round(windowHeight * 0.42));
   const [libraryVideoUri, setLibraryVideoUri] = useState<string | null>(null);
+  const [myRecordings, setMyRecordings] = useState<string[]>([]);
   const cameraRef = useRef<CameraView>(null);
   const webViewRef = useRef<WebView>(null);
   const dragStartHeight = useRef(0);
@@ -171,6 +185,23 @@ export default function SplitScreenReaction() {
     if (!micPermission?.granted) requestMicPermission();
   }, [cameraPermission, micPermission, requestCameraPermission, requestMicPermission]);
 
+  // Load the in-app clip library (newest first) on launch.
+  useEffect(() => {
+    (async () => {
+      try {
+        await FileSystem.makeDirectoryAsync(RECORDINGS_DIR, { intermediates: true }).catch(() => {});
+        const names = await FileSystem.readDirectoryAsync(RECORDINGS_DIR);
+        setMyRecordings(
+          names
+            .filter((n) => /\.(mov|mp4|m4v)$/i.test(n))
+            .sort()
+            .reverse()
+            .map((n) => RECORDINGS_DIR + n),
+        );
+      } catch {}
+    })();
+  }, []);
+
   // Tear the camera down whenever the screen loses focus so the native
   // session never lingers invisibly in the background.
   useEffect(() => {
@@ -279,31 +310,46 @@ export default function SplitScreenReaction() {
     const clips = segmentsRef.current;
     if (clips.length === 0) return;
 
-    // Save the clips to the iPhone Photos library so they show up in Recents.
-    const { status } = await MediaLibrary.requestPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert(
-        'Clip recorded, but not saved',
-        'Allow Photos access in Settings so your reactions can be saved to your camera roll.',
-      );
-      return;
-    }
-
-    let saved = 0;
+    // Copy each clip into the in-app library first — recordAsync writes to a
+    // temp cache that iOS can clear, so this is the durable copy.
+    const kept: string[] = [];
     for (const uri of clips) {
       try {
-        await MediaLibrary.saveToLibraryAsync(uri);
-        saved += 1;
+        const ext = /\.\w+$/.exec(uri)?.[0] ?? '.mov';
+        const dest = `${RECORDINGS_DIR}reaction-${Date.now()}-${kept.length}${ext}`;
+        await FileSystem.makeDirectoryAsync(RECORDINGS_DIR, { intermediates: true }).catch(() => {});
+        await FileSystem.copyAsync({ from: uri, to: dest });
+        kept.push(dest);
       } catch {}
     }
+    if (kept.length > 0) setMyRecordings((prev) => [...kept.slice().reverse(), ...prev]);
 
-    if (saved > 0) {
+    // Also save to the iPhone Photos library so clips show up in Recents.
+    let savedToPhotos = 0;
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status === 'granted') {
+      for (const uri of kept.length > 0 ? kept : clips) {
+        try {
+          await MediaLibrary.saveToLibraryAsync(uri);
+          savedToPhotos += 1;
+        } catch {}
+      }
+    }
+
+    if (kept.length > 0 || savedToPhotos > 0) {
+      const where =
+        kept.length > 0 && savedToPhotos > 0
+          ? 'My Video and your camera roll'
+          : kept.length > 0
+            ? 'My Video'
+            : 'your camera roll';
+      const n = Math.max(kept.length, savedToPhotos);
       Alert.alert(
-        'Reaction saved to Photos',
-        saved === 1 ? 'Your reaction clip is in your camera roll.' : `${saved} clips are in your camera roll.`,
+        'Reaction saved',
+        n === 1 ? `Your clip was saved to ${where}.` : `${n} clips were saved to ${where}.`,
       );
     } else {
-      Alert.alert('Save failed', 'The clip was recorded but could not be saved to Photos.');
+      Alert.alert('Save failed', 'The clip was recorded but could not be saved.');
     }
   };
 
@@ -332,12 +378,32 @@ export default function SplitScreenReaction() {
       allowsMultipleSelection: false,
     });
     const uri = result.canceled ? null : result.assets[0]?.uri;
-    if (uri) {
-      setLibraryVideoUri(uri);
-      libraryPlayer.replace(uri);
-      libraryPlayer.play();
-      setContentPaused(false);
-    }
+    if (uri) playLibraryVideo(uri);
+  };
+
+  const playLibraryVideo = (uri: string) => {
+    setLibraryVideoUri(uri);
+    libraryPlayer.replace(uri);
+    libraryPlayer.play();
+    setContentPaused(false);
+  };
+
+  const deleteRecording = (uri: string) => {
+    Alert.alert('Delete clip?', 'This removes it from My Video (Photos copies are kept).', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          setMyRecordings((prev) => prev.filter((u) => u !== uri));
+          if (libraryVideoUri === uri) {
+            libraryPlayer.pause();
+            setLibraryVideoUri(null);
+          }
+        },
+      },
+    ]);
   };
 
   // Pauses/plays the content being reacted to (WebView videos or the imported
@@ -366,6 +432,26 @@ export default function SplitScreenReaction() {
   };
 
   const source = SOURCES.find((s) => s.key === activeSource)!;
+
+  // Horizontal strip of clips recorded in the app, shown in the My Video tab.
+  const recordingsStrip = myRecordings.length > 0 && (
+    <ScrollView
+      horizontal
+      style={styles.clipStrip}
+      contentContainerStyle={styles.clipStripContent}
+      showsHorizontalScrollIndicator={false}>
+      {myRecordings.map((uri) => (
+        <View key={uri} style={[styles.clipChip, libraryVideoUri === uri && styles.clipChipActive]}>
+          <Pressable onPress={() => playLibraryVideo(uri)} hitSlop={4}>
+            <Text style={styles.clipChipText}>{recordingTimeLabel(uri)}</Text>
+          </Pressable>
+          <Pressable onPress={() => deleteRecording(uri)} hitSlop={8}>
+            <Text style={styles.clipChipDelete}>✕</Text>
+          </Pressable>
+        </View>
+      ))}
+    </ScrollView>
+  );
 
   return (
     <View style={styles.container}>
@@ -465,16 +551,18 @@ export default function SplitScreenReaction() {
               <Pressable style={styles.changeVideoButton} onPress={pickLibraryVideo}>
                 <Text style={styles.changeVideoText}>Change video</Text>
               </Pressable>
+              {recordingsStrip}
             </View>
           ) : (
             <View style={styles.libraryEmpty}>
               <Text style={styles.libraryTitle}>React to your own video</Text>
               <Text style={styles.libraryHint}>
-                Import a clip from your Photos library and record your reaction to it.
+                Import a clip from Photos, or record a reaction and it will appear here.
               </Text>
               <Pressable style={styles.importButton} onPress={pickLibraryVideo}>
                 <Text style={styles.importButtonText}>Choose from Photos</Text>
               </Pressable>
+              {recordingsStrip}
             </View>
           )
         ) : (
@@ -612,6 +700,40 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  clipStrip: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 8,
+    maxHeight: 44,
+  },
+  clipStripContent: {
+    gap: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+  },
+  clipChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  clipChipActive: {
+    backgroundColor: 'rgba(233,30,99,0.45)',
+  },
+  clipChipText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  clipChipDelete: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 12,
+    fontWeight: '700',
   },
   contentPane: {
     flex: 1,
